@@ -6,9 +6,17 @@ import shutil
 from tesseract_robotics.tesseract_common import FilesystemPath, GeneralResourceLocator
 from tesseract_robotics.tesseract_environment import Environment
 
+from tesseract_robotics.tesseract_scene_graph import Joint, Link, Visual, Collision, JointType_FIXED
+from tesseract_robotics.tesseract_geometry import Sphere
+from tesseract_robotics.tesseract_common import Isometry3d
+
+
+# def add_sphere_obstacle(env, name, center, radius=0.2, )
+
 # 你的實際檔案位置（請確認）
 URDF = Path(r"E:/scholar/2025 Fall/Algorithm of Robotic/hw/project5/workspace/resources/panda/panda.urdf")
-SRDF = Path(r"E:/scholar/2025 Fall/Algorithm of Robotic/hw/project5/workspace/resources/panda/panda.srdf")
+SRDF = Path(r"E:/scholar/2025 Fall/Algorithm of Robotic/hw/project5/workspace/resources/panda/panda_with_hand_links.srdf")
+
 MESH_ROOT = (URDF.parent / "meshes").as_posix()  # .../panda/meshes
 
 # 產生一份「已把 package://meshes/ 轉成絕對路徑」的臨時 URDF
@@ -27,7 +35,10 @@ def main():
 
     # 1) 生成已解析路徑的 URDF
     rewrite_urdf_mesh_paths(URDF, URDF_RESOLVED)
+    print(f"[OK] Generated resolved URDF: {URDF_RESOLVED}")
+    print(f"     (meshes root: {MESH_ROOT})")
 
+    
     # 2) 官方風格：FilesystemPath + GeneralResourceLocator
     locator = GeneralResourceLocator()
     urdf_path = FilesystemPath(URDF_RESOLVED.as_posix())
