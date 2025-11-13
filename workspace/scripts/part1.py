@@ -38,8 +38,14 @@ def add_sphere_obstacles(env, name, center, radius=0.2, parent_link="panda_link0
 
 
 # The actual file locations (change as needed)
-URDF = Path(r"E:/scholar/2025 Fall/Algorithm of Robotic/hw/project5/workspace/resources/panda/panda.urdf")
-SRDF = Path(r"E:/scholar/2025 Fall/Algorithm of Robotic/hw/project5/workspace/resources/panda/panda_with_hand_links.srdf")
+# URDF = Path(r"E:/scholar/2025 Fall/Algorithm of Robotic/hw/project5/workspace/resources/panda/panda.urdf")
+# SRDF = Path(r"E:/scholar/2025 Fall/Algorithm of Robotic/hw/project5/workspace/resources/panda/panda_with_hand_links.srdf")
+
+ROOT = Path(__file__).resolve().parent.parent
+
+URDF = ROOT / "resources" / "panda" / "panda.urdf"
+SRDF = ROOT / "resources" / "panda" / "panda.srdf"
+
 MESH_ROOT = (URDF.parent / "meshes").as_posix()  # .../panda/meshes
 
 # Generate a temporary URDF with absolute paths for meshes
