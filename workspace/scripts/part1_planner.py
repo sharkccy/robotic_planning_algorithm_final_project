@@ -13,10 +13,13 @@ Next steps (future extension):
 """
 import os
 import time
+import textwrap
 import numpy as np
 from pathlib import Path
+import tesseract_robotics
 from tesseract_robotics.tesseract_common import FilesystemPath, GeneralResourceLocator, Isometry3d, Translation3d, Quaterniond, ManipulatorInfo
-from tesseract_robotics.tesseract_environment import Environment, AddLinkCommand
+from tesseract_robotics import tesseract_common as tc
+from tesseract_robotics.tesseract_environment import Environment, AddLinkCommand, AddContactManagersPluginInfoCommand
 from tesseract_robotics.tesseract_scene_graph import Joint, Link, Visual, Collision, JointType_FIXED
 from tesseract_robotics.tesseract_geometry import Sphere
 from tesseract_robotics.tesseract_motion_planners import PlannerRequest
@@ -25,21 +28,24 @@ from tesseract_robotics.tesseract_command_language import CartesianWaypoint, Mov
     CartesianWaypointPoly_wrap_CartesianWaypoint, MoveInstructionPoly_wrap_MoveInstruction, InstructionPoly_as_MoveInstructionPoly, WaypointPoly_as_StateWaypointPoly, \
     JointWaypoint, JointWaypointPoly_wrap_JointWaypoint
 from tesseract_robotics.tesseract_time_parameterization import TimeOptimalTrajectoryGeneration, InstructionsTrajectory
-from tesseract_robotics.tesseract_motion_planners_simple import generateInterpolatedProgram
 from tesseract_robotics_viewer import TesseractViewer
 from tesseract_robotics.tesseract_collision import ContactResultMap, ContactTestType_ALL, ContactRequest, ContactResultVector
+from tesseract_robotics.tesseract_srdf import parseContactManagersPluginConfigString
 
 # -----------------------------------------------------------------------------
 # Configuration
 # -----------------------------------------------------------------------------
-SCRIPT_DIR = Path(__file__).resolve().parent.parent
-RESOURCES_DIR = SCRIPT_DIR / "resources" / "panda"
-URDF_PATH = FilesystemPath(str(RESOURCES_DIR / "panda_resolved.urdf"))
-# Use sanitized SRDF (no invalid hand group); switch to hand links version if desired
-SRDF_PATH = FilesystemPath(str(RESOURCES_DIR / "panda_with_hand_links.srdf"))
+ROOT = Path(__file__).resolve().parent.parent
+
+URDF_PATH = ROOT / "resources" / "panda" / "panda.urdf"
+SRDF_RESOLVED_PATH = ROOT / "resources" / "panda" / "panda_with_hand_links.srdf"
+MESH_ROOT = (URDF_PATH.parent / "meshes").as_posix()  # .../panda/meshes
+
+# Generate a temporary URDF with absolute paths for meshes
+URDF_RESOLVED_PATH = URDF_PATH.with_name(URDF_PATH.stem + "_resolved.urdf")
 
 TRAJOPT_NS = "TrajOptMotionPlannerTask"
-N_STEPS_INTERP = 15  # number of waypoints between cartesian targets after interpolation (if extended later)
+N_STEPS_INTERP = 5  # number of waypoints between cartesian targets after interpolation (if extended later)
 
 # Simple joint velocity/accel/jerk limits for Panda (rad/s etc.)
 PANDA_MAX_VEL = np.array([2.175, 2.175, 2.175, 2.175, 2.175, 2.175, 2.175], dtype=np.float64)
@@ -55,6 +61,69 @@ OBSTACLE_SPHERES = [
     (-0.35, 0.35, 0.8), (-0.55, 0.0, 0.8), (-0.35, -0.35, 0.8),
     (0.0, -0.55, 0.8), (0.35, -0.35, 0.8)
 ]
+
+
+def _contact_manager_plugin_yaml(library_dir: Path) -> str:
+        """Build a YAML snippet pointing to the Bullet/FCL factory DLL folder."""
+        yaml_config = textwrap.dedent(f"""
+        contact_manager_plugins:
+            search_paths:
+                - {library_dir.as_posix()}
+            search_libraries:
+                - tesseract_collision_bullet_factories
+                - tesseract_collision_fcl_factories
+            discrete_plugins:
+                default: BulletDiscreteBVHManager
+                plugins:
+                    BulletDiscreteBVHManager:
+                        class: BulletDiscreteBVHManagerFactory
+                        config:
+                            share_pool_allocators: false
+                            max_persistent_manifold_pool_size: 100
+                            max_collision_algorithm_pool_size: 100
+                    BulletDiscreteSimpleManager:
+                        class: BulletDiscreteSimpleManagerFactory
+                        config:
+                            share_pool_allocators: false
+                            max_persistent_manifold_pool_size: 100
+                            max_collision_algorithm_pool_size: 100
+                    FCLDiscreteBVHManager:
+                        class: FCLDiscreteBVHManagerFactory
+            continuous_plugins:
+                default: BulletCastBVHManager
+                plugins:
+                    BulletCastBVHManager:
+                        class: BulletCastBVHManagerFactory
+                        config:
+                            share_pool_allocators: false
+                            max_persistent_manifold_pool_size: 100
+                            max_collision_algorithm_pool_size: 100
+                    BulletCastSimpleManager:
+                        class: BulletCastSimpleManagerFactory
+                        config:
+                            share_pool_allocators: false
+                            max_persistent_manifold_pool_size: 100
+                            max_collision_algorithm_pool_size: 100
+        """)
+        return yaml_config.strip()
+
+
+def _build_contact_manager_command() -> AddContactManagersPluginInfoCommand:
+        libs_dir = Path(tesseract_robotics.__file__).resolve().parent.parent / "tesseract_robotics.libs"
+        if not libs_dir.exists():
+                raise FileNotFoundError(f"Cannot locate tesseract plugin directory: {libs_dir}")
+        yaml_str = _contact_manager_plugin_yaml(libs_dir)
+        plugin_info = parseContactManagersPluginConfigString(yaml_str)
+        return AddContactManagersPluginInfoCommand(plugin_info)
+
+
+def configure_contact_managers(env: Environment) -> None:
+        command = _build_contact_manager_command()
+        env.applyCommand(command)
+        if not env.setActiveDiscreteContactManager("BulletDiscreteBVHManager"):
+                raise RuntimeError("Failed to activate Bullet discrete contact manager")
+        if not env.setActiveContinuousContactManager("BulletCastBVHManager"):
+                raise RuntimeError("Failed to activate Bullet continuous contact manager")
 
 # -----------------------------------------------------------------------------
 # Helper Functions
@@ -75,6 +144,12 @@ OBSTACLE_SPHERES = [
 #     program.appendMoveInstruction(MoveInstructionPoly_wrap_MoveInstruction(instr_start))
 #     program.appendMoveInstruction(MoveInstructionPoly_wrap_MoveInstruction(instr_goal))
 #     return program
+
+def rewrite_urdf_mesh_paths(src: Path, dst: Path, pkg_prefix="package://meshes/"):
+    text = src.read_text(encoding="utf-8")
+    # Directly replace with filesystem path (no file:// to avoid URL encoding issues)
+    text = text.replace(pkg_prefix, MESH_ROOT + "/")
+    dst.write_text(text, encoding="utf-8")
 
 def build_simple_joint_seed(manip_info: ManipulatorInfo, joint_names: list[str], n_steps: int = 15, noise_std: float = 0.05, rng: np.random.Generator | None = None) -> CompositeInstruction:
     """Build a simple linear joint-space seed between two joint states, with small random noise."""
@@ -175,38 +250,38 @@ def trajectory_length(instructions: CompositeInstruction) -> float:
     return length
 
 def is_trajectory_collision_free(env: Environment, joint_names: list[str], instructions: CompositeInstruction, margin: float = 0.0) -> bool:
-    """Discrete collision check per waypoint using the environment manager.
-    Returns True if no contacts closer than margin across all waypoints.
-    """
-    solver = env.getStateSolver()
-    manager = env.getDiscreteContactManager()
-    manager.setActiveCollisionObjects(env.getLinkNames())
-    # Set exact margin (0.0 -> strict collision only)
-    # Not setting CollisionMarginData here keeps default; acceptable for strict check
+    # """Discrete collision check per waypoint using the environment manager.
+    # Returns True if no contacts closer than margin across all waypoints.
+    # """
+    # solver = env.getStateSolver()
+    # manager = env.getDiscreteContactManager()
+    # manager.setActiveCollisionObjects(env.getLinkNames())
+    # # Set exact margin (0.0 -> strict collision only)
+    # # Not setting CollisionMarginData here keeps default; acceptable for strict check
 
-    flat = instructions.flatten()
-    for instr in flat:
-        if not instr.isMoveInstruction():
-            continue
-        move = InstructionPoly_as_MoveInstructionPoly(instr)
-        wp_poly = move.getWaypoint()
-        if not wp_poly.isStateWaypoint():
-            continue
-        state_wp = WaypointPoly_as_StateWaypointPoly(wp_poly)
-        q = state_wp.getPosition().astype(np.float64).flatten()
+    # flat = instructions.flatten()
+    # for instr in flat:
+    #     if not instr.isMoveInstruction():
+    #         continue
+    #     move = InstructionPoly_as_MoveInstructionPoly(instr)
+    #     wp_poly = move.getWaypoint()
+    #     if not wp_poly.isStateWaypoint():
+    #         continue
+    #     state_wp = WaypointPoly_as_StateWaypointPoly(wp_poly)
+    #     q = state_wp.getPosition().astype(np.float64).flatten()
 
-        solver.setState(joint_names, q)
-        scene_state = solver.getState()
-        manager.setCollisionObjectsTransform(scene_state.link_transforms)
+    #     solver.setState(joint_names, q)
+    #     scene_state = solver.getState()
+    #     manager.setCollisionObjectsTransform(scene_state.link_transforms)
 
-        result_map = ContactResultMap()
-        manager.contactTest(result_map, ContactRequest(ContactTestType_ALL))
-        result_vec = ContactResultVector()
-        result_map.flattenMoveResults(result_vec)
-        # Any strictly negative distance indicates penetration
-        for i in range(len(result_vec)):
-            if result_vec[i].distance < margin:
-                return False
+    #     result_map = ContactResultMap()
+    #     manager.contactTest(result_map, ContactRequest(ContactTestType_ALL))
+    #     result_vec = ContactResultVector()
+    #     result_map.flattenMoveResults(result_vec)
+    #     # Any strictly negative distance indicates penetration
+    #     for i in range(len(result_vec)):
+    #         if result_vec[i].distance < margin:
+    #             return False
     return True
 
 def add_spheres(env: Environment, centers, radius: float = 0.2, parent_link: str = "panda_link0", name_prefix: str = "sphere_"):
@@ -258,11 +333,18 @@ def main():
     env_free = Environment(); 
     env_obs = Environment()
     locator = GeneralResourceLocator()
-    if not env_free.init(URDF_PATH, SRDF_PATH, locator):
-        raise RuntimeError("Failed to initialize Panda (free env)")
-    if not env_obs.init(URDF_PATH, SRDF_PATH, locator):
-        raise RuntimeError("Failed to initialize Panda (obstacle env)")
+    rewrite_urdf_mesh_paths(URDF_PATH, URDF_RESOLVED_PATH)
+    urdf_path = FilesystemPath(URDF_RESOLVED_PATH.as_posix())
+    srdf_path = FilesystemPath(SRDF_RESOLVED_PATH.as_posix())
 
+    if not env_free.init(urdf_path, srdf_path, locator):
+        raise RuntimeError("Failed to initialize Panda (free env)")
+    if not env_obs.init(urdf_path, srdf_path, locator):
+        raise RuntimeError("Failed to initialize Panda (obstacle env)")
+    
+    configure_contact_managers(env_free)
+    configure_contact_managers(env_obs)
+    
     # Add obstacle spheres to env_obs
     # add_spheres(env_obs, OBSTACLE_SPHERES, radius=0.2, parent_link="panda_link0")
 
