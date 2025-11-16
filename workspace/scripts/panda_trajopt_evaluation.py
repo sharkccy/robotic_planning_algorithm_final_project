@@ -151,51 +151,17 @@ def add_spheres(env: Environment, centers, radius: float = 0.2, parent_link: str
 
         env.applyCommand(AddLinkCommand(link, joint))
 
-def build_cartesian_program(manip_info: ManipulatorInfo, joint_names: list[str], start_joint: np.ndarray) -> CompositeInstruction:
-    start_state = JointWaypoint(joint_names, start_joint.astype(np.float64))
-    wp_start = CartesianWaypoint(
-        Isometry3d.Identity()
-        * Translation3d(0.8,-0.3,1.455)
-        * Quaterniond(0.70710678,0,0.70710678,0)
-    )
-    wp_mid = CartesianWaypoint(
-        Isometry3d.Identity()
-        * Translation3d(0.8,0.3,1.455)
-        * Quaterniond(0.70710678,0,0.70710678,0)
-    )
-    wp_goal = CartesianWaypoint(
-        Isometry3d.Identity()
-        * Translation3d(0.8,0.5,1.455)
-        * Quaterniond(0.70710678,0,0.70710678,0)
-    )
-
-    instr_joint = MoveInstruction(
-        JointWaypointPoly_wrap_JointWaypoint(start_state),
-        MoveInstructionType_FREESPACE,
-        "DEFAULT",
-    )
-    instr_start = MoveInstruction(
-        CartesianWaypointPoly_wrap_CartesianWaypoint(wp_start),
-        MoveInstructionType_FREESPACE,
-        "DEFAULT",
-    )
-    instr_mid = MoveInstruction(
-        CartesianWaypointPoly_wrap_CartesianWaypoint(wp_mid),
-        MoveInstructionType_FREESPACE,
-        "DEFAULT",
-    )
-    instr_goal = MoveInstruction(
-        CartesianWaypointPoly_wrap_CartesianWaypoint(wp_goal),
-        MoveInstructionType_FREESPACE,
-        "DEFAULT",
-    )
-
+def build_cartesian_program(manip_info: ManipulatorInfo, joint_names: list[str], joint_path: list[np.ndarray]) -> CompositeInstruction:
     program = CompositeInstruction("DEFAULT")
     program.setManipulatorInfo(manip_info)
-    program.appendMoveInstruction(MoveInstructionPoly_wrap_MoveInstruction(instr_joint))
-    program.appendMoveInstruction(MoveInstructionPoly_wrap_MoveInstruction(instr_start))
-    program.appendMoveInstruction(MoveInstructionPoly_wrap_MoveInstruction(instr_mid))
-    program.appendMoveInstruction(MoveInstructionPoly_wrap_MoveInstruction(instr_goal))
+    for q in joint_path:
+        wp = JointWaypoint(joint_names, q.astype(np.float64))
+        instr = MoveInstruction(
+            JointWaypointPoly_wrap_JointWaypoint(wp),
+            MoveInstructionType_FREESPACE,
+            "DEFAULT",
+        )
+        program.appendMoveInstruction(MoveInstructionPoly_wrap_MoveInstruction(instr))
     return program
 
 
@@ -327,10 +293,9 @@ def print_waypoints(instructions: CompositeInstruction) -> None:
         print(f"Joint: {pos}  t={state_wp.getTime():.4f}")
 
 
-def run_pipeline(env: Environment, manip_info: ManipulatorInfo, start_joint: np.ndarray, label: str) -> tuple[PlannerResponse, dict[str, float]]:
-    env.setState(JOINT_NAMES, start_joint)
-
-    cart_program = build_cartesian_program(manip_info, JOINT_NAMES, start_joint)
+def run_pipeline(env: Environment, manip_info: ManipulatorInfo, joint_path: list[np.ndarray], label: str) -> tuple[PlannerResponse, dict[str, float]]:
+    env.setState(JOINT_NAMES, joint_path[0])
+    cart_program = build_cartesian_program(manip_info, JOINT_NAMES, joint_path)
 
     interp_start = time.perf_counter()
     interpolated_program = generateInterpolatedProgram(
@@ -420,7 +385,16 @@ def main() -> None:
 
     # start_joint = np.array([0.0, -0.4, 0.0, -2.2, 0.0, 1.8, 0.8], dtype=np.float64)
     # start_joint = np.array([0.1, -0.8, 0.15, -2.4, 0.05, 1.6, 0.9], dtype=np.float64)
-    start_joint = np.array([0.0, -0.785, 0.0, -2.356, 0.0, 1.571, 0.785], dtype=np.float64)
+    start_joint = np.array([2.8, 0.0, 0.0, 0.0, 2.2, 2.2, -0.5], dtype=np.float64)   
+    mid_joint   = np.array([0.0, 0.0, 0.0, -0.5, 1.2, 1.0, 0.0], dtype=np.float64)     
+    mid2_joint  = np.array([0.0, 0.0, 0.25, -1.8, -1.0, 0.5, 0.5], dtype=np.float64) 
+    goal_joint  = np.array([0.0, 0.0, -0.5, -2.2, -1.0, 2.0, 1.5], dtype=np.float64)      
+
+    joint_path = []
+    joint_path.append(start_joint)
+    joint_path.append(mid_joint)
+    joint_path.append(mid2_joint)
+    joint_path.append(goal_joint)
 
     num_trials = int(os.getenv("TRAJOPT_TRIALS", "20"))
     free_metrics: list[dict[str, float]] = []
@@ -428,8 +402,8 @@ def main() -> None:
 
     for trial in range(1, num_trials + 1):
         print(f"===== Trial {trial}/{num_trials} =====")
-        _, free_stats = run_pipeline(env, manip_info, start_joint, f"Free env #{trial}")
-        _, obs_stats = run_pipeline(env_obs, manip_info, start_joint, f"Obstacle env #{trial}")
+        _, free_stats = run_pipeline(env, manip_info, joint_path, f"Free env #{trial}")
+        _, obs_stats = run_pipeline(env_obs, manip_info, joint_path, f"Obstacle env #{trial}")
         free_metrics.append(free_stats)
         obs_metrics.append(obs_stats)
 
