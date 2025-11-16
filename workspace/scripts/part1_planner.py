@@ -6,6 +6,8 @@ TrajOpt, then time-parameterize and visualize.
 """
 from pathlib import Path
 import numpy as np
+import os
+import time
 import tesseract_robotics
 
 from tesseract_robotics.tesseract_common import (
@@ -20,6 +22,17 @@ from tesseract_robotics.tesseract_environment import (
     Environment,
     AddContactManagersPluginInfoCommand,
     AddKinematicsInformationCommand,
+    AddLinkCommand,
+)
+from tesseract_robotics.tesseract_scene_graph import (
+    Joint,
+    Link,
+    Visual,
+    Collision,
+    JointType_FIXED,
+)
+from tesseract_robotics.tesseract_geometry import (
+    Sphere
 )
 from tesseract_robotics.tesseract_command_language import (
     CartesianWaypoint,
@@ -64,12 +77,22 @@ JOINT_NAMES = [f"panda_joint{i}" for i in range(1, 8)]
 PANDA_MAX_VEL = np.array([2.175, 2.175, 2.175, 2.175, 2.175, 2.175, 2.175], dtype=np.float64)
 PANDA_MAX_ACC = np.array([1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0], dtype=np.float64)
 PANDA_MAX_JERK = np.array([1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0], dtype=np.float64)
+
 OBSTACLE_SPHERES = [
-    (0.55, 0.0, 0.25), (0.35, 0.35, 0.25), (0.0, 0.55, 0.25),
-    (-0.55, 0.0, 0.25), (-0.35, -0.35, 0.25), (0.0, -0.55, 0.25),
-    (0.35, -0.35, 0.8), (0.35, 0.35, 0.8), (0.0, 0.55, 0.8),
-    (-0.35, 0.35, 0.8), (-0.55, 0.0, 0.8), (-0.35, -0.35, 0.8),
-    (0.0, -0.55, 0.8), (0.35, -0.35, 0.8)
+    (0.55, 0.0, 0.25), 
+    (0.35, 0.35, 0.25), 
+    (0.0, 0.55, 0.25),
+    (-0.55, 0.0, 0.25), 
+    (-0.35, -0.35, 0.25), 
+    (0.0, -0.55, 0.25),
+    (0.35, -0.35, 0.8), 
+    (0.35, 0.35, 0.8), 
+    (0.0, 0.55, 0.8),
+    (-0.35, 0.35, 0.8), 
+    (-0.55, 0.0, 0.8), 
+    (-0.35, -0.35, 0.8),
+    (0.0, -0.55, 0.8), 
+    (0.35, -0.35, 0.8)
 ]
 
 def _load_yaml_template(path: Path, **fmt: str) -> str:
@@ -98,26 +121,51 @@ def rewrite_urdf_mesh_paths(src: Path, dst: Path, pkg_prefix: str = "package://m
     dst.write_text(text, encoding="utf-8")
 
 
+def add_spheres(env: Environment, centers, radius: float = 0.2, parent_link: str = "panda_link0", name_prefix: str = "sphere_") -> None:
+    """Attach fixed collision spheres to emulate simple obstacles."""
+    if isinstance(centers, tuple) and len(centers) == 3:
+        centers = [centers]
 
+    for idx, center in enumerate(centers):
+        geometry = Sphere(radius)
+
+        visual = Visual()
+        visual.geometry = geometry
+        collision = Collision()
+        collision.geometry = geometry
+
+        link_name = f"{name_prefix}{idx}"
+        link = Link(link_name)
+        link.visual.push_back(visual)
+        link.collision.push_back(collision)
+
+        joint = Joint(f"{link_name}_joint")
+        joint.type = JointType_FIXED
+        joint.parent_link_name = parent_link
+        joint.child_link_name = link_name
+        joint.parent_to_joint_origin_transform = (
+            Isometry3d.Identity() * Translation3d(center[0], center[1], center[2])
+        )
+
+        env.applyCommand(AddLinkCommand(link, joint))
 
 def build_cartesian_program(manip_info: ManipulatorInfo, joint_names: list[str], start_joint: np.ndarray) -> CompositeInstruction:
     start_state = JointWaypoint(joint_names, start_joint.astype(np.float64))
     wp_start = CartesianWaypoint(
         Isometry3d.Identity()
-        * Translation3d(0.4, 0.0, 0.4)
+        * Translation3d(0.3, 0.0, 0.55)
         * Quaterniond(1, 0, 0, 0)
     )
     wp_mid = CartesianWaypoint(
         Isometry3d.Identity()
-        * Translation3d(0.6, 0.0, 0.7)
+        * Translation3d(0.35, 0.0, 0.6)
         * Quaterniond(1, 0, 0, 0)
     )
     wp_goal = CartesianWaypoint(
         Isometry3d.Identity()
-        * Translation3d(0.6, 0.2, 0.5)
+        * Translation3d(0.2, 0.05, 0.65)
         * Quaterniond(1, 0, 0, 0)
     )
-
     instr_joint = MoveInstruction(
         JointWaypointPoly_wrap_JointWaypoint(start_state),
         MoveInstructionType_FREESPACE,
@@ -188,6 +236,31 @@ def time_parameterize(instructions: CompositeInstruction) -> None:
         raise RuntimeError("Time parameterization failed")
 
 
+def trajectory_length(instructions: CompositeInstruction) -> float:
+    """Compute joint-space length of the executed StateWaypoints."""
+    q_list: list[np.ndarray] = []
+    for instr in instructions.flatten():
+        if not instr.isMoveInstruction():
+            continue
+
+        move = InstructionPoly_as_MoveInstructionPoly(instr)
+        wp_poly = move.getWaypoint()
+
+        if not wp_poly.isStateWaypoint():
+            continue
+
+        state_wp = WaypointPoly_as_StateWaypointPoly(wp_poly)
+        q_list.append(state_wp.getPosition().astype(np.float64).flatten())
+
+    if len(q_list) < 2:
+        return 0.0
+
+    length = 0.0
+    for i in range(len(q_list) - 1):
+        length += float(np.linalg.norm(q_list[i + 1] - q_list[i]))
+    return length
+
+
 def print_waypoints(instructions: CompositeInstruction) -> None:
     for instr in instructions.flatten():
         if not instr.isMoveInstruction():
@@ -201,6 +274,48 @@ def print_waypoints(instructions: CompositeInstruction) -> None:
         print(f"Joint: {pos}  t={state_wp.getTime():.4f}")
 
 
+def run_pipeline(env: Environment, manip_info: ManipulatorInfo, start_joint: np.ndarray, label: str) -> PlannerResponse:
+    env.setState(JOINT_NAMES, start_joint)
+
+    cart_program = build_cartesian_program(manip_info, JOINT_NAMES, start_joint)
+
+    interp_start = time.perf_counter()
+    interpolated_program = generateInterpolatedProgram(
+        cart_program,
+        env,
+        3.14,
+        1.0,
+        3.14,
+        15,
+    )
+    interp_duration = time.perf_counter() - interp_start
+    interp_flat = interpolated_program.flatten()
+    print(f"[{label}] Interpolated program instructions: {len(interp_flat)}")
+
+    opt_start = time.perf_counter()
+    optimized = optimize_with_trajopt(env, interpolated_program)
+    opt_duration = time.perf_counter() - opt_start
+    print(f"[{label}] TrajOpt success: {len(optimized.results)} instructions")
+
+    tp_start = time.perf_counter()
+    time_parameterize(optimized.results)
+    tp_duration = time.perf_counter() - tp_start
+    print(f"[{label}] timed waypoints:")
+    print_waypoints(optimized.results)
+
+    interp_length = trajectory_length(interpolated_program)
+    optimized_length = trajectory_length(optimized.results)
+    total_time = interp_duration + opt_duration + tp_duration
+    print(
+        f"[{label}] timing: interp {interp_duration:.3f}s | trajopt {opt_duration:.3f}s | totg {tp_duration:.3f}s | total {total_time:.3f}s"
+    )
+    print(
+        f"[{label}] joint lengths: interpolated {interp_length:.3f} rad | optimized {optimized_length:.3f} rad"
+    )
+
+    return optimized
+
+
 def main() -> None:
     rewrite_urdf_mesh_paths(URDF_PATH, URDF_RESOLVED_PATH)
     locator = GeneralResourceLocator()
@@ -212,7 +327,16 @@ def main() -> None:
         locator,
     )
 
+    env_obs = Environment()
+    assert env_obs.init(
+        FilesystemPath(URDF_RESOLVED_PATH.as_posix()),
+        FilesystemPath(SRDF_PATH.as_posix()),
+        locator,
+    )
+    
     configure_plugins(env)
+    configure_plugins(env_obs)
+    add_spheres(env_obs, OBSTACLE_SPHERES, radius=0.2)
 
     manip_info = ManipulatorInfo()
     manip_info.manipulator = "panda_arm"
@@ -220,44 +344,36 @@ def main() -> None:
     manip_info.working_frame = "panda_link0"
     manip_info.manipulator_ik_solver = "KDLInvKinChainLMA"
 
-    start_joint = np.array([0.0, -0.4, 0.0, -2.2, 0.0, 1.8, 0.8], dtype=np.float64)
-    env.setState(JOINT_NAMES, start_joint)
+    # start_joint = np.array([0.0, -0.4, 0.0, -2.2, 0.0, 1.8, 0.8], dtype=np.float64)
+    # start_joint = np.array([0.1, -0.8, 0.15, -2.4, 0.05, 1.6, 0.9], dtype=np.float64)
+    start_joint = np.array([0.0, -0.785, 0.0, -2.356, 0.0, 1.571, 0.785], dtype=np.float64)
 
-    viewer = TesseractViewer()
-    viewer.update_environment(env, [0, 0, 0])
-    viewer.start_serve_background()
+    free_path = run_pipeline(env, manip_info, start_joint, "Free env")
+    viewer_free = TesseractViewer(server_address=('127.0.0.1',8000))
+    viewer_free.update_environment(env, [0, 0, 0])
+    viewer_free.update_trajectory(free_path.results.flatten())
+    viewer_free.plot_trajectory(free_path.results.flatten(), manip_info, axes_length=0.05)
+    try:
+        viewer_free.start_serve_background()
+        print("View free environment at http://localhost:8000")
+        input("Press Enter to continue to obstacle environment...")
+    except Exception as e:
+        print(f"Error starting viewer: {e}")
 
-    cart_program = build_cartesian_program(manip_info, JOINT_NAMES, start_joint)
-
-    interpolated_program = generateInterpolatedProgram(
-        cart_program,
-        env,
-        3.14,
-        1.0,
-        3.14,
-        15,
-    )
-    interp_flat = interpolated_program.flatten()
-    print(f"Interpolated program instructions: {len(interp_flat)}")
-    for idx, instr in enumerate(interp_flat[:5]):
-        print("  interp", idx, instr.isMoveInstruction(), instr.getDescription())
+    obs_path = run_pipeline(env_obs, manip_info, start_joint, "Obstacle env")
+    viewer_obs = TesseractViewer(server_address=('127.0.0.1',8080))
+    viewer_obs.update_environment(env_obs, [0, 0, 0])
+    viewer_obs.update_trajectory(obs_path.results.flatten())
+    viewer_obs.plot_trajectory(obs_path.results.flatten(), manip_info, axes_length=0.05)
 
     try:
-        optimized = optimize_with_trajopt(env, interpolated_program)
-        print(f"TrajOpt success: {len(optimized.results)} instructions")
-        for idx, instr in enumerate(optimized.results[:5]):
-            print(idx, instr.isMoveInstruction(), instr.getDescription())
+        viewer_obs.start_serve_background()
+        print("View obstacle environment at http://localhost:8080")
+        input("Press Enter to exit...")
     except Exception as e:
-        print(f"Error occurred: {e}")
-        print("===================================")
+        print(f"Error starting viewer: {e}")
 
-    time_parameterize(optimized.results)
-    print_waypoints(optimized.results)
 
-    viewer.update_trajectory(optimized.results)
-    viewer.plot_trajectory(optimized.results, manip_info, axes_length=0.05)
-
-    input("Press Enter to exit...")
 
 
 if __name__ == "__main__":
