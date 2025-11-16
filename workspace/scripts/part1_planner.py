@@ -46,6 +46,8 @@ from tesseract_robotics.tesseract_command_language import (
     WaypointPoly_as_StateWaypointPoly,
     JointWaypoint,
     JointWaypointPoly_wrap_JointWaypoint,
+    WaypointPoly_as_JointWaypointPoly,
+    WaypointPoly_as_CartesianWaypointPoly,
 )
 from tesseract_robotics.tesseract_motion_planners import PlannerRequest, PlannerResponse
 from tesseract_robotics.tesseract_motion_planners_simple import generateInterpolatedProgram
@@ -236,9 +238,8 @@ def time_parameterize(instructions: CompositeInstruction) -> None:
         raise RuntimeError("Time parameterization failed")
 
 
-def trajectory_length(instructions: CompositeInstruction) -> float:
-    """Compute joint-space length of the executed StateWaypoints."""
-    q_list: list[np.ndarray] = []
+def _collect_joint_positions(instructions: CompositeInstruction) -> list[np.ndarray]:
+    positions: list[np.ndarray] = []
     for instr in instructions.flatten():
         if not instr.isMoveInstruction():
             continue
@@ -250,15 +251,66 @@ def trajectory_length(instructions: CompositeInstruction) -> float:
             continue
 
         state_wp = WaypointPoly_as_StateWaypointPoly(wp_poly)
-        q_list.append(state_wp.getPosition().astype(np.float64).flatten())
+        positions.append(np.asarray(state_wp.getPosition(), dtype=np.float64).flatten())
+    return positions
+
+def _collect_cartesian_positions(env: Environment, instructions: CompositeInstruction, joint_names: list[str], tcp_frame: str) -> list[np.ndarray]:
+    points: list[np.ndarray] = []
+    solver = env.getStateSolver()
+
+    for instr in instructions.flatten():
+        if not instr.isMoveInstruction():
+            continue
+
+        move = InstructionPoly_as_MoveInstructionPoly(instr)
+        wp_poly = move.getWaypoint()
+
+        if wp_poly.isStateWaypoint():
+            state_wp = WaypointPoly_as_StateWaypointPoly(wp_poly)
+            q = np.asarray(state_wp.getPosition(), dtype=np.float64).flatten()
+            state = solver.getState(joint_names, q)
+            pose = state.link_transforms[tcp_frame]
+            points.append(np.asarray(pose.translation(), dtype=np.float64))
+            continue
+
+        if wp_poly.isJointWaypoint():
+            joint_wp = WaypointPoly_as_JointWaypointPoly(wp_poly)
+            q = np.asarray(joint_wp.getPosition(), dtype=np.float64).flatten()
+            state = solver.getState(joint_names, q)
+            pose = state.link_transforms[tcp_frame]
+            points.append(np.asarray(pose.translation(), dtype=np.float64))
+            continue
+
+        if wp_poly.isCartesianWaypoint():
+            cart_wp = WaypointPoly_as_CartesianWaypointPoly(wp_poly)
+            transform = cart_wp.getTransform()
+            points.append(np.asarray(transform.translation(), dtype=np.float64))
+            continue
+
+    return points
+
+def radial_length(instructions: CompositeInstruction) -> tuple[float, bool]:
+    """Compute joint-space length of the executed StateWaypoints."""
+    q_list = _collect_joint_positions(instructions)
 
     if len(q_list) < 2:
-        return 0.0
+        return 0.0, False
 
     length = 0.0
     for i in range(len(q_list) - 1):
         length += float(np.linalg.norm(q_list[i + 1] - q_list[i]))
-    return length
+    return length, True
+
+def cartesian_path_length(env: Environment, instructions: CompositeInstruction, joint_names: list[str], tcp_frame: str) -> tuple[float, bool]:
+    """TCP path length in meters using FK for state/joint waypoints or direct Cartesian poses."""
+    points = _collect_cartesian_positions(env, instructions, joint_names, tcp_frame)
+    if len(points) < 2:
+        return 0.0, False
+
+    length = 0.0
+    for i in range(len(points) - 1):
+        length += float(np.linalg.norm(points[i + 1] - points[i]))
+    return length, True
 
 
 def print_waypoints(instructions: CompositeInstruction) -> None:
@@ -303,15 +355,21 @@ def run_pipeline(env: Environment, manip_info: ManipulatorInfo, start_joint: np.
     print(f"[{label}] timed waypoints:")
     print_waypoints(optimized.results)
 
-    interp_length = trajectory_length(interpolated_program)
-    optimized_length = trajectory_length(optimized.results)
+    interp_length, interp_has_joint = radial_length(interpolated_program)
+    optimized_length, opt_has_joint = radial_length(optimized.results)
+    tcp_frame = manip_info.tcp_frame or manip_info.working_frame or JOINT_NAMES[-1]
+    interp_cart, interp_has_cart = cartesian_path_length(env, interpolated_program, JOINT_NAMES, tcp_frame)
+    optimized_cart, opt_has_cart = cartesian_path_length(env, optimized.results, JOINT_NAMES, tcp_frame)
     total_time = interp_duration + opt_duration + tp_duration
     print(
         f"[{label}] timing: interp {interp_duration:.3f}s | trajopt {opt_duration:.3f}s | totg {tp_duration:.3f}s | total {total_time:.3f}s"
     )
-    print(
-        f"[{label}] joint lengths: interpolated {interp_length:.3f} rad | optimized {optimized_length:.3f} rad"
-    )
+    joint_interp_str = f"{interp_length:.3f} rad" if interp_has_joint else "n/a (Cartesian seed)"
+    joint_opt_str = f"{optimized_length:.3f} rad" if opt_has_joint else "n/a"
+    print(f"[{label}] joint lengths: interpolated {joint_interp_str} | optimized {joint_opt_str}")
+    cart_interp_str = f"{interp_cart:.3f} m" if interp_has_cart else "n/a"
+    cart_opt_str = f"{optimized_cart:.3f} m" if opt_has_cart else "n/a"
+    print(f"[{label}] Cartesian lengths: interpolated {cart_interp_str} | optimized {cart_opt_str}")
 
     return optimized
 
