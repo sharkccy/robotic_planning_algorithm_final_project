@@ -13,6 +13,11 @@ import tesseract_robotics
 
 import random
 import vamp
+
+import threading
+
+import queue
+
 # import pandas as pd
 
 from tesseract_robotics.tesseract_common import (
@@ -103,6 +108,8 @@ OBSTACLE_SPHERES = [
     (0.35, -0.35, 0.8)
 ]
 
+thread_queue = queue.Queue()
+
 def _load_yaml_template(path: Path, **fmt: str) -> str:
     text = path.read_text(encoding="utf-8")
     return text.format(**fmt)
@@ -160,11 +167,14 @@ def add_spheres(env: Environment, centers, radius: float = 0.2, parent_link: str
 def build_cartesian_program(manip_info: ManipulatorInfo, joint_names: list[str], joint_path) -> CompositeInstruction:
     program = CompositeInstruction("DEFAULT")
     program.setManipulatorInfo(manip_info)
-    for q in joint_path:
+    total_skipped = 0
+    print(f'starting cartesian, total nodes: {len(joint_path)}')
+    for i in range(len(joint_path)):
+        q = joint_path[i]
         # print(q)
         q_arr = np.array(q, dtype=np.float64)
         if not np.isfinite(q_arr).all():
-            print(f'Didn\'t work: {q}')
+            # print(f'Didn\'t work: {q}')
             continue
         wp = JointWaypoint(joint_names, q_arr)
         # wp = JointWaypoint(joint_names, q)
@@ -327,17 +337,25 @@ def run_pipeline(env: Environment, manip_info: ManipulatorInfo, joint_path, labe
     # opt_duration = time.perf_counter() - opt_start
     # print(f"[{label}] TrajOpt success: {len(optimized.results)} instructions")
 
+    print('Returned to pipeline')
+
     tp_start = time.perf_counter()
+
+    print('Beginning time parametrization')
     time_parameterize(optimized.results)
+    print('Returned from time parametrization')
+
     tp_duration = time.perf_counter() - tp_start
     # print(f"[{label}] timed waypoints:")
-    print_waypoints(optimized.results)
+    # print_waypoints(optimized.results)
 
-    interp_length, interp_has_joint = radial_length(interpolated_program)
-    optimized_length, opt_has_joint = radial_length(optimized.results)
+    # interp_length, interp_has_joint = radial_length(interpolated_program)
+    # optimized_length, opt_has_joint = radial_length(optimized.results)
     tcp_frame = manip_info.tcp_frame or manip_info.working_frame or JOINT_NAMES[-1]
-    interp_cart, interp_has_cart = cartesian_path_length(env, interpolated_program, JOINT_NAMES, tcp_frame)
+    # interp_cart, interp_has_cart = cartesian_path_length(env, interpolated_program, JOINT_NAMES, tcp_frame)
+    print('STARTING CARTESIAN PATH LENGTH')
     optimized_cart, opt_has_cart = cartesian_path_length(env, optimized.results, JOINT_NAMES, tcp_frame)
+    print('ENDED CARTESIAN PATH LENGTH')
     # total_time = interp_duration + opt_duration + tp_duration
     # print(
     #     f"[{label}] timing: interp {interp_duration:.3f}s | trajopt {opt_duration:.3f}s | totg {tp_duration:.3f}s | total {total_time:.3f}s"
@@ -357,7 +375,9 @@ def run_pipeline(env: Environment, manip_info: ManipulatorInfo, joint_path, labe
         "cartesian_length": optimized_cart if opt_has_cart else float("nan"),
     }
 
-    return optimized, metrics
+    # return optimized, metrics
+
+    thread_queue.put((optimized, metrics))
 
 
 def summarize_metric(records: list[dict[str, float]], key: str) -> float:
@@ -382,78 +402,117 @@ def run_planner(planner_name: str, spheres, result, seed: int = 42):
     
 
 def main(
-        n_trials: int = 1,
+        n_trials: int = 10,
         planner: str = 'rrtc',
         sampler_name: str = 'halton',
         **kwargs,
     ):
-    rewrite_urdf_mesh_paths(URDF_PATH, URDF_RESOLVED_PATH)
-    locator = GeneralResourceLocator()
 
-    env_obs = Environment()
-    assert env_obs.init(
-        FilesystemPath(URDF_RESOLVED_PATH.as_posix()),
-        FilesystemPath(SRDF_PATH.as_posix()),
-        locator,
-    )
+    for l in range(10):
+        rewrite_urdf_mesh_paths(URDF_PATH, URDF_RESOLVED_PATH)
+        locator = GeneralResourceLocator()
 
-    (vamp_module, planner_func, plan_settings, simp_settings) = vamp.configure_robot_and_planner_with_kwargs('panda', planner, **kwargs)
+        env_obs = Environment()
+        assert env_obs.init(
+            FilesystemPath(URDF_RESOLVED_PATH.as_posix()),
+            FilesystemPath(SRDF_PATH.as_posix()),
+            locator,
+        )
 
-    sampler = getattr(vamp_module, sampler_name)()
+        (vamp_module, planner_func, plan_settings, simp_settings) = vamp.configure_robot_and_planner_with_kwargs('panda', planner, **kwargs)
+
+        # sampler = getattr(vamp_module, sampler_name)()    
+        
+        random.seed(time.time())
+        np.random.seed(int(time.time()))
+
+        results = [[]] * n_trials
+        spheres = [np.array(sphere) for sphere in OBSTACLE_SPHERES]   
+
+        start = [2.8, 0.0, 0.0, 0.0, 2.2, 2.2, -0.5]   
+        goal  = [0.0, 0.0, -0.5, -2.2, -1.0, 2.0, 1.5]
+
+        
+        
+        for trial in range(n_trials):
+            # from vamp import pybullet_interface as vpb
+            print(f'Trial {trial} / {n_trials}')
+
+            # sampler.skip()
+            sampler = getattr(vamp_module, sampler_name)()
+            sampler.skip(random.randint(234, 123456))
+            vamp_env = prepare_environment(start, goal)
+
+            # result = planner_func(start, goal, vamp_env, plan_settings, sampler)
+
+            # TODO no point in simplifying the solution, right?
+            # robot_dir = Path(__file__).parent.parent / 'resources' / 'panda'
+            # sim = vpb.PyBulletSimulator(str(robot_dir / f"panda_spherized.urdf"), vamp_module.joint_names(), True)
+
+            # results[trial] = result
+            result = planner_func(start, goal, vamp_env, plan_settings, sampler)
+            results[trial] = vamp_module.simplify(result.path, vamp_env, simp_settings, sampler)
+            # results[trial] = planner_func(start, goal, vamp_env, plan_settings, sampler)
+
+            # print(f'Length of immediate path from results is {len(results[trial].path)} ---------------------------------------- {results[trial].path[5]}')
+
+            # results[trial].path.interpolate_to_resolution(vamp.panda.resolution())
+
+            # sim.animate(results[trial].path)
+
+            # input("INPUT")
+            # exit()
+
+
+            # print('RESULT FORMAT:')
+            # print(type(results[0].path))
+            # # print(type(results[0].path.data))
+            # # print(results[0].path.shape())
+            # print(results[0].path[1])
+            # exit()
+        
+        configure_plugins(env_obs)
+        add_spheres(env_obs, OBSTACLE_SPHERES, radius=0.2)
+
+        manip_info = ManipulatorInfo()
+        manip_info.manipulator = "panda_arm"
+        manip_info.tcp_frame = "panda_link8"
+        manip_info.working_frame = "panda_link0"
+        manip_info.manipulator_ik_solver = "KDLInvKinChainLMA"
+
+        # for p in results[0].path:
+        #     print(p)
+
+        threads = []
+
+        thread_results = [[]] * n_trials
+
+        for trial in range(n_trials):
+            threads.append(threading.Thread(target=run_pipeline, args=(env_obs, manip_info, results[trial].path, f'Thread #{trial}')))
+            threads[trial].start()
+            # optimized, metrics = run_pipeline(env_obs, manip_info, results[trial].path, f'Obstacle Env #{trial}')
+        
+        for thread in threads:
+            thread.join()
+
+        # collected_results = []
+
+        optimized = None
+        optimized_len = -1
+
+        while not thread_queue.empty():
+            r = thread_queue.get()
+            # r_len = len(r[0].results.flatten())
+            r_len = r[1]['cartesian_length']
+            print(r_len)
+            if(optimized_len < 0 or r_len < optimized_len):
+                optimized = r[0]
+                optimized_len = r_len
     
     
-    random.seed(0)
-    np.random.seed(0)
-
-    results = [[]] * n_trials
-    spheres = [np.array(sphere) for sphere in OBSTACLE_SPHERES]   
-
-    start = [2.8, 0.0, 0.0, 0.0, 2.2, 2.2, -0.5]   
-    goal  = [0.0, 0.0, -0.5, -2.2, -1.0, 2.0, 1.5]
-
-    for trial in range(n_trials):
-        from vamp import pybullet_interface as vpb
-        print(f'Trial {trial} / {n_trials}')
-        vamp_env = prepare_environment(start, goal)
-
-        # result = planner_func(start, goal, vamp_env, plan_settings, sampler)
-
-        # TODO no point in simplifying the solution, right?
-        robot_dir = Path(__file__).parent.parent / 'resources' / 'panda'
-        sim = vpb.PyBulletSimulator(str(robot_dir / f"panda_spherized.urdf"), vamp_module.joint_names(), True)
-
-        # results[trial] = result
-        result = planner_func(start, goal, vamp_env, plan_settings, sampler)
-        results[trial] = vamp_module.simplify(result.path, vamp_env, simp_settings, sampler)
-        results[trial].path.interpolate_to_resolution(vamp.panda.resolution())
-
-        sim.animate(results[trial].path)
-
-        input("INPUT")
-        exit()
-
-
-        # print('RESULT FORMAT:')
-        # print(type(results[0].path))
-        # # print(type(results[0].path.data))
-        # # print(results[0].path.shape())
-        # print(results[0].path[1])
-        # exit()
+    # len(response.results.flatten())
     
-    configure_plugins(env_obs)
-    add_spheres(env_obs, OBSTACLE_SPHERES, radius=0.2)
 
-    manip_info = ManipulatorInfo()
-    manip_info.manipulator = "panda_arm"
-    manip_info.tcp_frame = "panda_link8"
-    manip_info.working_frame = "panda_link0"
-    manip_info.manipulator_ik_solver = "KDLInvKinChainLMA"
-
-    # for p in results[0].path:
-    #     print(p)
-
-    for trial in range(n_trials):
-        optimized = run_pipeline(env_obs, manip_info, results[trial].path, f'Obstacle Env #{trial}')
     
     
 
