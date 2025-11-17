@@ -402,13 +402,16 @@ def run_planner(planner_name: str, spheres, result, seed: int = 42):
     
 
 def main(
-        n_trials: int = 10,
+        n_trials: int = 32,
         planner: str = 'rrtc',
         sampler_name: str = 'halton',
         **kwargs,
     ):
 
-    for l in range(10):
+    all_results = []
+    all_planning_times = []
+    for l in range(20):
+        main_start_time = time.perf_counter()
         rewrite_urdf_mesh_paths(URDF_PATH, URDF_RESOLVED_PATH)
         locator = GeneralResourceLocator()
 
@@ -435,6 +438,7 @@ def main(
         
         
         for trial in range(n_trials):
+            print(f'Algorithm ')
             # from vamp import pybullet_interface as vpb
             print(f'Trial {trial} / {n_trials}')
 
@@ -450,9 +454,13 @@ def main(
             # sim = vpb.PyBulletSimulator(str(robot_dir / f"panda_spherized.urdf"), vamp_module.joint_names(), True)
 
             # results[trial] = result
-            result = planner_func(start, goal, vamp_env, plan_settings, sampler)
-            results[trial] = vamp_module.simplify(result.path, vamp_env, simp_settings, sampler)
-            # results[trial] = planner_func(start, goal, vamp_env, plan_settings, sampler)
+            vamp_start_time = time.perf_counter()
+            # result = planner_func(start, goal, vamp_env, plan_settings, sampler)
+            # vamp_end_time = time.perf_counter()
+            # results[trial] = vamp_module.simplify(result.path, vamp_env, simp_settings, sampler)
+            results[trial] = planner_func(start, goal, vamp_env, plan_settings, sampler)
+            vamp_end_time = time.perf_counter()
+
 
             # print(f'Length of immediate path from results is {len(results[trial].path)} ---------------------------------------- {results[trial].path[5]}')
 
@@ -483,17 +491,25 @@ def main(
         # for p in results[0].path:
         #     print(p)
 
-        threads = []
+        # threads = []
 
         thread_results = [[]] * n_trials
 
-        for trial in range(n_trials):
-            threads.append(threading.Thread(target=run_pipeline, args=(env_obs, manip_info, results[trial].path, f'Thread #{trial}')))
-            threads[trial].start()
-            # optimized, metrics = run_pipeline(env_obs, manip_info, results[trial].path, f'Obstacle Env #{trial}')
-        
-        for thread in threads:
-            thread.join()
+        trajopt_start_time = time.perf_counter()
+
+        for trial in range(0, n_trials, 4):
+            threads = []
+            # for trial in range(n_trials):
+            #     threads.append(threading.Thread(target=run_pipeline, args=(env_obs, manip_info, results[trial].path, f'Thread #{trial}')))
+            #     threads[trial].start()
+            #     # optimized, metrics = run_pipeline(env_obs, manip_info, results[trial].path, f'Obstacle Env #{trial}')
+
+            for ind in range(4):
+                threads.append(threading.Thread(target=run_pipeline, args=(env_obs, manip_info, results[trial + ind].path, f'Thread #{trial + ind}')))
+                threads[ind].start()
+            
+            for thread in threads:
+                thread.join()
 
         # collected_results = []
 
@@ -508,6 +524,28 @@ def main(
             if(optimized_len < 0 or r_len < optimized_len):
                 optimized = r[0]
                 optimized_len = r_len
+        
+        trajopt_end_time = time.perf_counter()
+
+        trajopt_time = trajopt_end_time - trajopt_start_time
+        vamp_time = vamp_end_time - vamp_start_time
+
+        total_time = trajopt_time + vamp_time
+        
+        all_results.append(optimized_len)
+        
+
+        main_end_time = time.perf_counter()
+
+        main_total_time = main_end_time - main_start_time
+
+        all_planning_times.append(total_time)
+    
+    avg_path_length = sum(all_results) / len(all_results)
+    avg_total_time = sum(all_planning_times) / len(all_planning_times)
+
+    print(f'Average Path Length (m): {avg_path_length}')
+    print(f'Average Total Planning Time (seconds): {avg_total_time:.6f}')
     
     
     # len(response.results.flatten())
@@ -559,17 +597,22 @@ def main(
     #     print(f"Error starting viewer: {e}")
 
     # obs_path = run_pipeline(env_obs, manip_info, start_joint, "Obstacle env")
-    viewer_obs = TesseractViewer(server_address=('0.0.0.0',8080))
-    viewer_obs.update_environment(env_obs, [0, 0, 0])
-    viewer_obs.update_trajectory(optimized.results.flatten())
-    viewer_obs.plot_trajectory(optimized.results.flatten(), manip_info, axes_length=0.05)
 
-    try:
-        viewer_obs.start_serve_background()
-        print("View obstacle environment at http://localhost:8080")
-        input("Press Enter to exit...")
-    except Exception as e:
-        print(f"Error starting viewer: {e}")
+
+
+
+
+    # viewer_obs = TesseractViewer(server_address=('0.0.0.0',8080))
+    # viewer_obs.update_environment(env_obs, [0, 0, 0])
+    # viewer_obs.update_trajectory(optimized.results.flatten())
+    # viewer_obs.plot_trajectory(optimized.results.flatten(), manip_info, axes_length=0.05)
+
+    # try:
+    #     viewer_obs.start_serve_background()
+    #     print("View obstacle environment at http://localhost:8080")
+    #     input("Press Enter to exit...")
+    # except Exception as e:
+    #     print(f"Error starting viewer: {e}")
 
 
 
