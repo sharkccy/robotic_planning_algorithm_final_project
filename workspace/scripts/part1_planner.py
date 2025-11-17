@@ -151,50 +151,33 @@ def add_spheres(env: Environment, centers, radius: float = 0.2, parent_link: str
 
         env.applyCommand(AddLinkCommand(link, joint))
 
-def build_cartesian_program(manip_info: ManipulatorInfo, joint_names: list[str], start_joint: np.ndarray) -> CompositeInstruction:
-    start_state = JointWaypoint(joint_names, start_joint.astype(np.float64))
-    wp_start = CartesianWaypoint(
-        Isometry3d.Identity()
-        * Translation3d(0.3, 0.0, 0.55)
-        * Quaterniond(1, 0, 0, 0)
-    )
-    wp_mid = CartesianWaypoint(
-        Isometry3d.Identity()
-        * Translation3d(0.35, 0.0, 0.6)
-        * Quaterniond(1, 0, 0, 0)
-    )
-    wp_goal = CartesianWaypoint(
-        Isometry3d.Identity()
-        * Translation3d(0.2, 0.05, 0.65)
-        * Quaterniond(1, 0, 0, 0)
-    )
-    instr_joint = MoveInstruction(
-        JointWaypointPoly_wrap_JointWaypoint(start_state),
-        MoveInstructionType_FREESPACE,
-        "DEFAULT",
-    )
-    instr_start = MoveInstruction(
-        CartesianWaypointPoly_wrap_CartesianWaypoint(wp_start),
-        MoveInstructionType_FREESPACE,
-        "DEFAULT",
-    )
-    instr_mid = MoveInstruction(
-        CartesianWaypointPoly_wrap_CartesianWaypoint(wp_mid),
-        MoveInstructionType_FREESPACE,
-        "DEFAULT",
-    )
-    instr_goal = MoveInstruction(
-        CartesianWaypointPoly_wrap_CartesianWaypoint(wp_goal),
-        MoveInstructionType_FREESPACE,
-        "DEFAULT",
-    )
-
+def build_cartesian_program(manip_info: ManipulatorInfo, joint_names: list[str], joint_path: list[np.ndarray]) -> CompositeInstruction:
+    # Env2
+    # wp_start = CartesianWaypoint(
+    #     Isometry3d.Identity()
+    #     * Translation3d(0.3, 0.0, 0.55)
+    #     * Quaterniond(1, 0, 0, 0)
+    # )
+    # wp_mid = CartesianWaypoint(
+    #     Isometry3d.Identity()
+    #     * Translation3d(0.35, 0.0, 0.6)
+    #     * Quaterniond(1, 0, 0, 0)
+    # )
+    # wp_goal = CartesianWaypoint(
+    #     Isometry3d.Identity()
+    #     * Translation3d(0.2, 0.05, 0.65)
+    #     * Quaterniond(1, 0, 0, 0)
+    # )
     program = CompositeInstruction("DEFAULT")
     program.setManipulatorInfo(manip_info)
-    program.appendMoveInstruction(MoveInstructionPoly_wrap_MoveInstruction(instr_joint))
-    program.appendMoveInstruction(MoveInstructionPoly_wrap_MoveInstruction(instr_start))
-    program.appendMoveInstruction(MoveInstructionPoly_wrap_MoveInstruction(instr_mid))
-    program.appendMoveInstruction(MoveInstructionPoly_wrap_MoveInstruction(instr_goal))
+    for q in joint_path:
+        wp = JointWaypoint(joint_names, q.astype(np.float64))
+        instr = MoveInstruction(
+            JointWaypointPoly_wrap_JointWaypoint(wp),
+            MoveInstructionType_FREESPACE,
+            "DEFAULT",
+        )
+        program.appendMoveInstruction(MoveInstructionPoly_wrap_MoveInstruction(instr))
     return program
 
 
@@ -326,10 +309,13 @@ def print_waypoints(instructions: CompositeInstruction) -> None:
         print(f"Joint: {pos}  t={state_wp.getTime():.4f}")
 
 
-def run_pipeline(env: Environment, manip_info: ManipulatorInfo, start_joint: np.ndarray, label: str) -> PlannerResponse:
-    env.setState(JOINT_NAMES, start_joint)
+def run_pipeline(env: Environment, manip_info: ManipulatorInfo, joint_path: list[np.ndarray], label: str) -> PlannerResponse:
+    env.setState(JOINT_NAMES, joint_path[0])
+    state = env.getStateSolver().getState(JOINT_NAMES, joint_path[0])
+    tcp_pose = state.link_transforms["panda_link8"]
+    print("TCP xyz:", tcp_pose.translation().flatten())
 
-    cart_program = build_cartesian_program(manip_info, JOINT_NAMES, start_joint)
+    cart_program = build_cartesian_program(manip_info, JOINT_NAMES, joint_path)
 
     interp_start = time.perf_counter()
     interpolated_program = generateInterpolatedProgram(
@@ -403,30 +389,49 @@ def main() -> None:
     manip_info.manipulator_ik_solver = "KDLInvKinChainLMA"
 
     # start_joint = np.array([0.0, -0.4, 0.0, -2.2, 0.0, 1.8, 0.8], dtype=np.float64)
-    # start_joint = np.array([0.1, -0.8, 0.15, -2.4, 0.05, 1.6, 0.9], dtype=np.float64)
-    start_joint = np.array([0.0, -0.785, 0.0, -2.356, 0.0, 1.571, 0.785], dtype=np.float64)
+    # start_joint = np.array([0, 0, 0, 0, 0, 1.571, 0.785], dtype=np.float64)
+    # Panda joint limits (approximate)
+    # joint_lower = np.array([-2.8973, -1.7628, -2.8973, -3.0718, -2.8973, -0.0175, -2.8973])
+    # joint_upper = np.array([2.8973, 1.7628, 2.8973, -0.0698, 2.8973, 3.7525, 2.8973])
+    # np.random.seed()  
 
-    free_path = run_pipeline(env, manip_info, start_joint, "Free env")
+    # start_joint = np.array([0.0, -0.785, 0.0, -2.356, 0.0, 1.571, 0.785], dtype=np.float64)
+    # mid_joint = np.random.uniform(joint_lower, joint_upper)
+    # goal_joint = np.random.uniform(joint_lower, joint_upper)
+
+    start_joint = np.array([2.8, 0.0, 0.0, 0.0, 2.2, 2.2, -0.5], dtype=np.float64)   
+    mid_joint   = np.array([0.0, 0.0, 0.0, -0.5, 1.2, 1.0, 0.0], dtype=np.float64)     
+    mid2_joint  = np.array([0.0, 0.0, 0.25, -1.8, -1.0, 0.5, 0.5], dtype=np.float64) 
+    goal_joint  = np.array([0.0, 0.0, -0.5, -2.2, -1.0, 2.0, 1.5], dtype=np.float64)      
+
+    joint_path = []
+    joint_path.append(start_joint)
+    joint_path.append(mid_joint)
+    joint_path.append(mid2_joint)
+    joint_path.append(goal_joint)
+    free_path = run_pipeline(env, manip_info, joint_path, "Free env")
     viewer_free = TesseractViewer(server_address=('127.0.0.1',8000))
+    # viewer_free = TesseractViewer(server_address=('0.0.0.0',8080))
     viewer_free.update_environment(env, [0, 0, 0])
     viewer_free.update_trajectory(free_path.results.flatten())
     viewer_free.plot_trajectory(free_path.results.flatten(), manip_info, axes_length=0.05)
     try:
         viewer_free.start_serve_background()
-        print("View free environment at http://localhost:8000")
+        print("View free environment at http://localhost:8000 on windows or http://0.0.0.0:8000 on other devices")
         input("Press Enter to continue to obstacle environment...")
     except Exception as e:
         print(f"Error starting viewer: {e}")
 
-    obs_path = run_pipeline(env_obs, manip_info, start_joint, "Obstacle env")
-    viewer_obs = TesseractViewer(server_address=('127.0.0.1',8080))
+    obs_path = run_pipeline(env_obs, manip_info, joint_path, "Obstacle env")
+    viewer_obs = TesseractViewer(server_address=('127.0.0.1',8081))
+    # viewer_obs = TesseractViewer(server_address=('0.0.0.0',8081))
     viewer_obs.update_environment(env_obs, [0, 0, 0])
     viewer_obs.update_trajectory(obs_path.results.flatten())
     viewer_obs.plot_trajectory(obs_path.results.flatten(), manip_info, axes_length=0.05)
 
     try:
         viewer_obs.start_serve_background()
-        print("View obstacle environment at http://localhost:8080")
+        print("View obstacle environment at http://localhost:8081 on windows or http://0.0.0.0:8081 on other devices")
         input("Press Enter to exit...")
     except Exception as e:
         print(f"Error starting viewer: {e}")
