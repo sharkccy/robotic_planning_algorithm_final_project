@@ -152,6 +152,51 @@ def add_spheres(env: Environment, centers, radius: float = 0.2, parent_link: str
         env.applyCommand(AddLinkCommand(link, joint))
 
 def build_cartesian_program(manip_info: ManipulatorInfo, joint_names: list[str], joint_path: list[np.ndarray]) -> CompositeInstruction:
+    # start_state = JointWaypoint(joint_names, joint_path[0].astype(np.float64))
+    # wp_start = CartesianWaypoint(
+    #     Isometry3d.Identity()
+    #     * Translation3d(0.3, 0.0, 0.55)
+    #     * Quaterniond(1, 0, 0, 0)
+    # )
+    # wp_mid = CartesianWaypoint(
+    #     Isometry3d.Identity()
+    #     * Translation3d(0.35, 0.0, 0.6)
+    #     * Quaterniond(1, 0, 0, 0)
+    # )
+    # wp_goal = CartesianWaypoint(
+    #     Isometry3d.Identity()
+    #     * Translation3d(0.2, 0.05, 0.65)
+    #     * Quaterniond(1, 0, 0, 0)
+    # )
+
+    # instr_joint = MoveInstruction(
+    #     JointWaypointPoly_wrap_JointWaypoint(start_state),
+    #     MoveInstructionType_FREESPACE,
+    #     "DEFAULT",
+    # )
+    # instr_start = MoveInstruction(
+    #     CartesianWaypointPoly_wrap_CartesianWaypoint(wp_start),
+    #     MoveInstructionType_FREESPACE,
+    #     "DEFAULT",
+    # )
+    # instr_mid = MoveInstruction(
+    #     CartesianWaypointPoly_wrap_CartesianWaypoint(wp_mid),
+    #     MoveInstructionType_FREESPACE,
+    #     "DEFAULT",
+    # )
+    # instr_goal = MoveInstruction(
+    #     CartesianWaypointPoly_wrap_CartesianWaypoint(wp_goal),
+    #     MoveInstructionType_FREESPACE,
+    #     "DEFAULT",
+    # )
+
+    # program = CompositeInstruction("DEFAULT")
+    # program.setManipulatorInfo(manip_info)
+    # program.appendMoveInstruction(MoveInstructionPoly_wrap_MoveInstruction(instr_joint))
+    # program.appendMoveInstruction(MoveInstructionPoly_wrap_MoveInstruction(instr_start))
+    # program.appendMoveInstruction(MoveInstructionPoly_wrap_MoveInstruction(instr_mid))
+    # program.appendMoveInstruction(MoveInstructionPoly_wrap_MoveInstruction(instr_goal))
+
     program = CompositeInstruction("DEFAULT")
     program.setManipulatorInfo(manip_info)
     for q in joint_path:
@@ -294,6 +339,7 @@ def print_waypoints(instructions: CompositeInstruction) -> None:
 
 
 def run_pipeline(env: Environment, manip_info: ManipulatorInfo, joint_path: list[np.ndarray], label: str) -> tuple[PlannerResponse, dict[str, float]]:
+    pipeline_time = time.perf_counter()
     env.setState(JOINT_NAMES, joint_path[0])
     cart_program = build_cartesian_program(manip_info, JOINT_NAMES, joint_path)
 
@@ -320,6 +366,7 @@ def run_pipeline(env: Environment, manip_info: ManipulatorInfo, joint_path: list
     tp_duration = time.perf_counter() - tp_start
     print(f"[{label}] timed waypoints:")
     print_waypoints(optimized.results)
+    pipeline_duration = time.perf_counter() - pipeline_time
 
     interp_length, interp_has_joint = radial_length(interpolated_program)
     optimized_length, opt_has_joint = radial_length(optimized.results)
@@ -328,7 +375,7 @@ def run_pipeline(env: Environment, manip_info: ManipulatorInfo, joint_path: list
     optimized_cart, opt_has_cart = cartesian_path_length(env, optimized.results, JOINT_NAMES, tcp_frame)
     total_time = interp_duration + opt_duration + tp_duration
     print(
-        f"[{label}] timing: interp {interp_duration:.3f}s | trajopt {opt_duration:.3f}s | totg {tp_duration:.3f}s | total {total_time:.3f}s"
+        f"[{label}] timing: interp {interp_duration:.3f}s | trajopt {opt_duration:.3f}s | totg {tp_duration:.3f}s | total {total_time:.3f}s | pipeline {pipeline_duration:.3f}s"
     )
     joint_interp_str = f"{interp_length:.3f} rad" if interp_has_joint else "n/a (Cartesian seed)"
     joint_opt_str = f"{optimized_length:.3f} rad" if opt_has_joint else "n/a"
@@ -342,6 +389,7 @@ def run_pipeline(env: Environment, manip_info: ManipulatorInfo, joint_path: list
         "trajopt_duration": opt_duration,
         "totg_duration": tp_duration,
         "total_time": total_time,
+        "pipeline_duration": pipeline_duration,
         "cartesian_length": optimized_cart if opt_has_cart else float("nan"),
     }
 
@@ -383,18 +431,18 @@ def main() -> None:
     manip_info.working_frame = "panda_link0"
     manip_info.manipulator_ik_solver = "KDLInvKinChainLMA"
 
-    # start_joint = np.array([0.0, -0.4, 0.0, -2.2, 0.0, 1.8, 0.8], dtype=np.float64)
+    start_joint = np.array([0.0, -0.785, 0.0, -2.356, 0.0, 1.571, 0.785], dtype=np.float64)
     # start_joint = np.array([0.1, -0.8, 0.15, -2.4, 0.05, 1.6, 0.9], dtype=np.float64)
-    start_joint = np.array([2.8, 0.0, 0.0, 0.0, 2.2, 2.2, -0.5], dtype=np.float64)   
-    mid_joint   = np.array([0.0, 0.0, 0.0, -0.5, 1.2, 1.0, 0.0], dtype=np.float64)     
-    mid2_joint  = np.array([0.0, 0.0, 0.25, -1.8, -1.0, 0.5, 0.5], dtype=np.float64) 
-    goal_joint  = np.array([0.0, 0.0, -0.5, -2.2, -1.0, 2.0, 1.5], dtype=np.float64)      
+    # start_joint = np.array([2.8, 0.0, 0.0, 0.0, 2.2, 2.2, -0.5], dtype=np.float64)   
+    # mid_joint   = np.array([0.0, 0.0, 0.0, -0.5, 1.2, 1.0, 0.0], dtype=np.float64)     
+    # mid2_joint  = np.array([0.0, 0.0, 0.25, -1.8, -1.0, 0.5, 0.5], dtype=np.float64) 
+    # goal_joint  = np.array([0.0, 0.0, -0.5, -2.2, -1.0, 2.0, 1.5], dtype=np.float64)      
 
     joint_path = []
     joint_path.append(start_joint)
-    joint_path.append(mid_joint)
-    joint_path.append(mid2_joint)
-    joint_path.append(goal_joint)
+    # joint_path.append(mid_joint)
+    # joint_path.append(mid2_joint)
+    # joint_path.append(goal_joint)
 
     num_trials = int(os.getenv("TRAJOPT_TRIALS", "20"))
     free_metrics: list[dict[str, float]] = []
@@ -408,9 +456,9 @@ def main() -> None:
         obs_metrics.append(obs_stats)
 
     for label, metrics in (("Free env", free_metrics), ("Obstacle env", obs_metrics)):
-        avg_time = summarize_metric(metrics, "total_time")
+        avg_time = summarize_metric(metrics, "pipeline_duration")
         avg_path = summarize_metric(metrics, "cartesian_length")
-        print(f"[{label}] avg total_time over {len(metrics)} runs: {avg_time:.3f}s")
+        print(f"[{label}] avg pipeline_duration over {len(metrics)} runs: {avg_time:.3f}s")
         print(f"[{label}] avg cartesian_path over {len(metrics)} runs: {avg_path:.3f}m")
 
 
