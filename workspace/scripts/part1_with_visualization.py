@@ -388,8 +388,6 @@ def main() -> None:
     manip_info.working_frame = "panda_link0"
     manip_info.manipulator_ik_solver = "KDLInvKinChainLMA"
 
-    # start_joint = np.array([0.0, -0.4, 0.0, -2.2, 0.0, 1.8, 0.8], dtype=np.float64)
-    # start_joint = np.array([0, 0, 0, 0, 0, 1.571, 0.785], dtype=np.float64)
     # Panda joint limits (approximate)
     # joint_lower = np.array([-2.8973, -1.7628, -2.8973, -3.0718, -2.8973, -0.0175, -2.8973])
     # joint_upper = np.array([2.8973, 1.7628, 2.8973, -0.0698, 2.8973, 3.7525, 2.8973])

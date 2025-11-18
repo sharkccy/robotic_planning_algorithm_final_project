@@ -1,0 +1,14 @@
+kinematic_plugins:
+  search_paths:
+    - {LIB_DIR}
+  search_libraries:
+    - tesseract_kinematics_kdl_factories
+  inv_kin_plugins:
+    panda_arm:
+      default: KDLInvKinChainLMA
+      plugins:
+        KDLInvKinChainLMA:
+          class: KDLInvKinChainLMAFactory
+          config:
+            base_link: panda_link0
+            tip_link: panda_link8
