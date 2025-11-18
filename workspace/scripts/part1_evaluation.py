@@ -431,18 +431,18 @@ def main() -> None:
     manip_info.working_frame = "panda_link0"
     manip_info.manipulator_ik_solver = "KDLInvKinChainLMA"
 
-    start_joint = np.array([0.0, -0.785, 0.0, -2.356, 0.0, 1.571, 0.785], dtype=np.float64)
+    # start_joint = np.array([0.0, -0.785, 0.0, -2.356, 0.0, 1.571, 0.785], dtype=np.float64)
     # start_joint = np.array([0.1, -0.8, 0.15, -2.4, 0.05, 1.6, 0.9], dtype=np.float64)
-    # start_joint = np.array([2.8, 0.0, 0.0, 0.0, 2.2, 2.2, -0.5], dtype=np.float64)   
-    # mid_joint   = np.array([0.0, 0.0, 0.0, -0.5, 1.2, 1.0, 0.0], dtype=np.float64)     
-    # mid2_joint  = np.array([0.0, 0.0, 0.25, -1.8, -1.0, 0.5, 0.5], dtype=np.float64) 
-    # goal_joint  = np.array([0.0, 0.0, -0.5, -2.2, -1.0, 2.0, 1.5], dtype=np.float64)      
+    start_joint = np.array([2.8, 0.0, 0.0, 0.0, 2.2, 2.2, -0.5], dtype=np.float64)   
+    mid_joint   = np.array([0.0, 0.0, 0.0, -0.5, 1.2, 1.0, 0.0], dtype=np.float64)     
+    mid2_joint  = np.array([0.0, 0.0, 0.25, -1.8, -1.0, 0.5, 0.5], dtype=np.float64) 
+    goal_joint  = np.array([0.0, 0.0, -0.5, -2.2, -1.0, 2.0, 1.5], dtype=np.float64)      
 
     joint_path = []
     joint_path.append(start_joint)
-    # joint_path.append(mid_joint)
-    # joint_path.append(mid2_joint)
-    # joint_path.append(goal_joint)
+    joint_path.append(mid_joint)
+    joint_path.append(mid2_joint)
+    joint_path.append(goal_joint)
 
     num_trials = int(os.getenv("TRAJOPT_TRIALS", "20"))
     free_metrics: list[dict[str, float]] = []
